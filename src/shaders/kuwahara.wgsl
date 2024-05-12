@@ -54,9 +54,9 @@ fn main(
         if in_sector && dist2 <= n * n && y2 >= 0 && y2 < h && x2 >= 0 && x2 < w {
           let weight = kernel[dist2];
           let value = textureLoad(input_texture, vec2<i32>(x2, y2), 0);
-          let weited_value = value * weight;
-          sum_color += weited_value;
-          sum_color2 += weited_value * value;
+          let weighted_value = value * weight;
+          sum_color += weighted_value;
+          sum_color2 += weighted_value * value;
           weight_sum += weight;
         }
       } // xx
