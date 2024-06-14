@@ -2,6 +2,9 @@ use wgpu::util::DeviceExt;
 
 use pollster::FutureExt;
 
+use image::Rgba;
+use image::RgbaImage;
+
 // https://blog.redwarp.app/image-filters/
 
 // https://github.com/redwarp/blog/blob/main/code-sample/image-filters/src/main.rs
@@ -12,6 +15,54 @@ use pollster::FutureExt;
 // Giuseppe Papari, Nicolai Petkov, and Patrizio Campisi, Artistic Edge and Corner Enhancing Smoothing, IEEE TRANSACTIONS ON IMAGE PROCESSING, VOL. 16, NO. 10, OCTOBER 2007, pages 2449–2461
 
 const SECTOR_COUNT: usize = 8;
+
+fn load_rgba(path: &str) -> anyhow::Result<RgbaImage> {
+    let img = load_image::load_path(path)?.into_imgvec();
+    match img {
+        load_image::export::imgref::ImgVecKind::RGB8(img) => Ok(RgbaImage::from_fn(
+            img.width() as u32,
+            img.height() as u32,
+            |x, y| {
+                let col = img.buf()[(y * img.stride() as u32 + x) as usize];
+                Rgba([col.r, col.g, col.b, 255])
+            },
+        )),
+        load_image::export::imgref::ImgVecKind::RGBA8(img) => Ok(RgbaImage::from_fn(
+            img.width() as u32,
+            img.height() as u32,
+            |x, y| {
+                let col = img.buf()[(y * img.stride() as u32 + x) as usize];
+                Rgba([col.r, col.g, col.b, col.a])
+            },
+        )),
+        load_image::export::imgref::ImgVecKind::RGB16(img) => Ok(RgbaImage::from_fn(
+            img.width() as u32,
+            img.height() as u32,
+            |x, y| {
+                let col = img.buf()[(y * img.stride() as u32 + x) as usize];
+                let r = ((col.r as u32) * 255 / 65535) as u8;
+                let g = ((col.g as u32) * 255 / 65535) as u8;
+                let b = ((col.b as u32) * 255 / 65535) as u8;
+                Rgba([r, g, b, 255])
+            },
+        )),
+        load_image::export::imgref::ImgVecKind::RGBA16(img) => Ok(RgbaImage::from_fn(
+            img.width() as u32,
+            img.height() as u32,
+            |x, y| {
+                let col = img.buf()[(y * img.stride() as u32 + x) as usize];
+                let r = ((col.r as u32) * 255 / 65535) as u8;
+                let g = ((col.g as u32) * 255 / 65535) as u8;
+                let b = ((col.b as u32) * 255 / 65535) as u8;
+                let a = ((col.a as u32) * 255 / 65535) as u8;
+                Rgba([r, g, b, a])
+            },
+        )),
+        _ => Err(anyhow::anyhow!(
+            "image type error. only color image is supported."
+        )),
+    }
+}
 
 fn filter(
     filter_size: i32,
@@ -36,9 +87,7 @@ fn filter(
         .block_on()?;
 
     // Load the image
-
-    let input_image = image::open(src_path)?.to_rgba8();
-
+    let input_image = load_rgba(src_path)?;
     let (width, height) = input_image.dimensions();
 
     let texture_size = wgpu::Extent3d {
