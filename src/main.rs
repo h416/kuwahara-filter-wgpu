@@ -143,6 +143,7 @@ fn filter(
         module: &shader,
         entry_point: "main",
         compilation_options: Default::default(),
+        cache: None,
     });
 
     let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
