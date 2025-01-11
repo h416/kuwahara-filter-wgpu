@@ -141,7 +141,7 @@ fn filter(
         label: Some("pipeline"),
         layout: None,
         module: &shader,
-        entry_point: "main",
+        entry_point: Some("main"),
         compilation_options: Default::default(),
         cache: None,
     });
