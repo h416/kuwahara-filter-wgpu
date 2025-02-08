@@ -13,6 +13,6 @@ image = { version = "0.25.5", default-features = false, features = ["jpeg", "png
 load_image = "3.2.1"
 log = "0.4.24"
 pollster = "0.4"
-wgpu = "23.0"
+wgpu = "24.0.1"
 
 
