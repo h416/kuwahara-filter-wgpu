@@ -5,16 +5,17 @@ use pollster::FutureExt;
 use image::Rgba;
 use image::RgbaImage;
 
-// https://blog.redwarp.app/image-filters/
-
-// https://github.com/redwarp/blog/blob/main/code-sample/image-filters/src/main.rs
-// https://github.com/redwarp/filters
-
-// https://en.wikipedia.org/wiki/Kuwahara_filter
-// https://www.youtube.com/watch?v=LDhN-JK3U9g
 // Giuseppe Papari, Nicolai Petkov, and Patrizio Campisi, Artistic Edge and Corner Enhancing Smoothing, IEEE TRANSACTIONS ON IMAGE PROCESSING, VOL. 16, NO. 10, OCTOBER 2007, pages 2449–2461
 
-const SECTOR_COUNT: usize = 8;
+// https://blog.redwarp.app/image-filters/
+// https://github.com/redwarp/blog/blob/main/code-sample/image-filters/src/main.rs
+// https://github.com/redwarp/filters
+// https://en.wikipedia.org/wiki/Kuwahara_filter
+// https://www.youtube.com/watch?v=LDhN-JK3U9g
+// https://www.umsl.edu/~kangh/Papers/kang-tpcg2010.pdf
+// https://blog.maximeheckel.com/posts/on-crafting-painterly-shaders/
+// https://github.com/GarrettGunnell/Post-Processing/blob/main/Assets/Kuwahara%20Filter/AnisotropicKuwahara.shader
+// https://projects.blender.org/blender/blender/pulls/110786
 
 fn load_rgba(path: &str) -> anyhow::Result<RgbaImage> {
     let img = load_image::load_path(path)?.into_imgvec();
@@ -64,10 +65,110 @@ fn load_rgba(path: &str) -> anyhow::Result<RgbaImage> {
     }
 }
 
+// use macro to use include_str!
+macro_rules! create_compute_pipeline {
+    ($device:expr, $path:expr, $name:expr) => {{
+        let shader_code = include_str!($path);
+        let shader_module = $device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(&format!("shader_{}", $name)),
+            source: wgpu::ShaderSource::Wgsl(shader_code.into()),
+        });
+        $device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(&format!("pipeline_{}", $name)),
+            layout: None,
+            module: &shader_module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        })
+    }};
+}
+
+fn create_bind_group(
+    device: &wgpu::Device,
+    pipeline: &wgpu::ComputePipeline,
+    input_texture: &wgpu::Texture,
+    output_texture: &wgpu::Texture,
+    name: &str,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(&format!("bind_group_{}", name)),
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(
+                    &input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                ),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(
+                    &output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                ),
+            },
+        ],
+    })
+}
+
+fn create_bind_group_uniform(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    label_f32_pairs: &[(&str, f32)],
+    bind_group_name: &str,
+) -> wgpu::BindGroup {
+    let buffers: Vec<_> = label_f32_pairs
+        .iter()
+        .map(|(label, value)| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: bytemuck::cast_slice(&[*value]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        })
+        .collect();
+
+    let entries: Vec<_> = buffers
+        .iter()
+        .enumerate()
+        .map(|(i, buffer)| wgpu::BindGroupEntry {
+            binding: i as u32,
+            resource: buffer.as_entire_binding(),
+        })
+        .collect();
+
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(bind_group_name),
+        layout,
+        entries: &entries,
+    })
+}
+
+fn create_texture(
+    device: &wgpu::Device,
+    texture_size: wgpu::Extent3d,
+    label: &str,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: texture_size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
+    })
+}
+
 fn filter(
     filter_size: i32,
-    q: f32,
-    sigma: f32,
+    sharpness: f32,
+    eccentricity: f32,
+    uniformity: f32,
     src_path: &str,
     dst_path: &str,
 ) -> anyhow::Result<()> {
@@ -96,17 +197,9 @@ fn filter(
         depth_or_array_layers: 1,
     };
 
-    let input_texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("input_texture"),
-        size: texture_size,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-    });
+    let input_texture = create_texture(&device, texture_size, "input_texture");
 
+    // copy input_image to input_texture
     queue.write_texture(
         input_texture.as_image_copy(),
         bytemuck::cast_slice(input_image.as_raw()),
@@ -118,37 +211,37 @@ fn filter(
         texture_size,
     );
 
-    // Create an output texture
-    let output_texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("output_texture"),
-        size: texture_size,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
-        usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::STORAGE_BINDING,
-    });
+    let tmp1_texture = create_texture(&device, texture_size, "tmp1");
+    let tmp2_texture = create_texture(&device, texture_size, "tmp2");
+    let output_texture = create_texture(&device, texture_size, "output_texture");
 
-    // Create the compute pipeline and bindings
+    let pipeline_edge = create_compute_pipeline!(&device, "shaders/edge.wgsl", "edge");
+    let bind_group_edge = create_bind_group(
+        &device,
+        &pipeline_edge,
+        &input_texture,
+        &tmp1_texture,
+        "edge",
+    );
+    let pipeline_blur = create_compute_pipeline!(&device, "shaders/blur.wgsl", "blur");
+    let bind_group_blur = create_bind_group(
+        &device,
+        &pipeline_blur,
+        &tmp1_texture,
+        &tmp2_texture,
+        "blur",
+    );
+    let bind_group_blur_params = create_bind_group_uniform(
+        &device,
+        &pipeline_blur.get_bind_group_layout(1),
+        &[("uniformity", uniformity)],
+        "bind_group_blur_params",
+    );
 
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/kuwahara.wgsl").into()),
-    });
-
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("pipeline"),
-        layout: None,
-        module: &shader,
-        entry_point: Some("main"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
-
-    let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("texture_bind_group"),
-        layout: &pipeline.get_bind_group_layout(0),
+    let pipeline_kuwa = create_compute_pipeline!(&device, "shaders/kuwahara.wgsl", "kuwa");
+    let bind_group_kuwa = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("bind_group_kuwa"),
+        layout: &pipeline_kuwa.get_bind_group_layout(0),
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -159,76 +252,29 @@ fn filter(
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::TextureView(
+                    &tmp2_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                ),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(
                     &output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
                 ),
             },
         ],
     });
 
-    let n = filter_size;
-    let filter_size_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("filter_size_buffer"),
-        contents: bytemuck::cast_slice(&[filter_size]),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-
-    let q_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("q_buffer"),
-        contents: bytemuck::cast_slice(&[q]),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-
-    let pi = std::f32::consts::PI;
-    let pi2 = pi * 2.0_f32;
-    let sigma2 = sigma * sigma;
-    let zero = 0.0_f32;
-
-    // let sector_map_size = 2 * n - 1;
-    // sector_map: (2 * n - 1, 2 * n - 1)
-    let sector_map = get_sector_map(filter_size);
-    let sector_map_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("sector_map"),
-        contents: bytemuck::cast_slice(&sector_map[..]),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
-
-    let nn = (n * n) as usize;
-
-    let kernel_size = nn + 1;
-    let mut kernel_values = vec![zero; kernel_size];
-    for i in 0..=nn {
-        let weight = (-(i as f32) / (2.0_f32 * sigma2)).exp() / (pi2 * sigma2);
-        kernel_values[i] = weight;
-    }
-
-    let kernel = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("kernel"),
-        contents: bytemuck::cast_slice(&kernel_values[..]),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
-
-    let compute_constants = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("compute_constants"),
-        layout: &pipeline.get_bind_group_layout(1),
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: filter_size_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: q_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: kernel.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: sector_map_buffer.as_entire_binding(),
-            },
+    let filter_size_f32 = filter_size as f32;
+    let bind_group_kuwa_params = create_bind_group_uniform(
+        &device,
+        &pipeline_kuwa.get_bind_group_layout(1),
+        &[
+            ("filter_size_buffer", filter_size_f32),
+            ("sharpness_buffer", sharpness),
+            ("eccentricity_buffer", eccentricity),
         ],
-    });
+        "bind_group_kuwa_params",
+    );
 
     // Dispatch
 
@@ -240,12 +286,22 @@ fn filter(
             compute_work_group_count((texture_size.width, texture_size.height), (16, 16));
 
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("Grayscale pass"),
+            label: Some("compute_pass"),
             timestamp_writes: None,
         });
-        compute_pass.set_pipeline(&pipeline);
-        compute_pass.set_bind_group(0, &texture_bind_group, &[]);
-        compute_pass.set_bind_group(1, &compute_constants, &[]);
+
+        compute_pass.set_pipeline(&pipeline_edge);
+        compute_pass.set_bind_group(0, &bind_group_edge, &[]);
+        compute_pass.dispatch_workgroups(dispatch_with, dispatch_height, 1);
+
+        compute_pass.set_pipeline(&pipeline_blur);
+        compute_pass.set_bind_group(0, &bind_group_blur, &[]);
+        compute_pass.set_bind_group(1, &bind_group_blur_params, &[]);
+        compute_pass.dispatch_workgroups(dispatch_with, dispatch_height, 1);
+
+        compute_pass.set_pipeline(&pipeline_kuwa);
+        compute_pass.set_bind_group(0, &bind_group_kuwa, &[]);
+        compute_pass.set_bind_group(1, &bind_group_kuwa_params, &[]);
         compute_pass.dispatch_workgroups(dispatch_with, dispatch_height, 1);
     }
 
@@ -332,98 +388,16 @@ fn padded_bytes_per_row(width: u32) -> usize {
     bytes_per_row + padding
 }
 
-fn get_sector_map(filter_size: i32) -> Vec<u32> {
-    let n = filter_size;
-    let sector_map_size = 2 * n - 1;
-    let mut sector_map = vec![0; (sector_map_size * sector_map_size) as usize];
-
-    let pi = std::f32::consts::PI;
-    let pi2 = pi * 2.0_f32;
-
-    let debug_sector_map = false;
-    if debug_sector_map {
-        for d in 0..SECTOR_COUNT {
-            let df = (d + 1) as f32;
-            let min_val = df - 0.5_f32;
-            let max_val = df + 0.5_f32;
-            let min_val2 = (min_val) * pi2 / (SECTOR_COUNT as f32);
-            let max_val2 = (max_val) * pi2 / (SECTOR_COUNT as f32);
-            println!("{} {}-{} {}-{} ", d, min_val, max_val, min_val2, max_val2);
-        }
-    }
-
-    for y2 in 0..sector_map_size {
-        for x2 in 0..sector_map_size {
-            let x = x2 - (n - 1);
-            let y = y2 - (n - 1);
-            let dist2 = x * x + y * y;
-            let index = x2 + sector_map_size * y2;
-
-            if dist2 == 0 {
-                let mut map_value = 0;
-                for d in 0..SECTOR_COUNT {
-                    map_value += 1 << d;
-                }
-                // println!("{},{} {}", x2, y2, map_value);
-                sector_map[index as usize] = map_value;
-            } else {
-                let mut theta = (y as f32).atan2(x as f32) + pi;
-                if theta < pi / (SECTOR_COUNT as f32) {
-                    theta += pi2;
-                }
-                let val = (SECTOR_COUNT as f32) * theta / pi2;
-                if debug_sector_map {
-                    println!("{},{}  {} {}", x, y, theta, val);
-                }
-                let mut map_value = 0;
-                for d in 0..SECTOR_COUNT {
-                    let df = (d + 1) as f32;
-                    let min_val = df - 0.5_f32;
-                    let max_val = df + 0.5_f32;
-                    let in_sector = min_val <= val && val < max_val;
-                    if in_sector {
-                        map_value += 1 << d;
-                    }
-                }
-                // println!("{},{} {}", x2, y2, map_value);
-                sector_map[index as usize] = map_value;
-            }
-        }
-    }
-    if debug_sector_map {
-        for y2 in 0..sector_map_size {
-            for x2 in 0..sector_map_size {
-                let index = x2 + sector_map_size * y2;
-                print!("{:3} ", &sector_map[index as usize]);
-            }
-            println!();
-        }
-
-        for d in 0..SECTOR_COUNT {
-            println!("{}", d);
-            for y2 in 0..sector_map_size {
-                for x2 in 0..sector_map_size {
-                    let index = x2 + sector_map_size * y2;
-                    let map_value = sector_map[index as usize];
-                    let in_sector = map_value & (1 << d);
-
-                    let val = if in_sector > 0 { 1 } else { 0 };
-
-                    print!("{} ", val);
-                }
-                println!();
-            }
-        }
-    }
-    sector_map
-}
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // dbg!(&args);
-    if args.len() != 6 {
+    if args.len() != 7 {
         let command = &args[0];
-        println!("usage {} filter_size q sigma src dst", &command);
-        println!("example {} 7 10.0 4.0 src.jpg dst.png", &command);
+        println!(
+            "usage {} filter_size sharpness eccentricity uniformity src dst",
+            &command
+        );
+        println!("example {} 7 10.0 4.0 2.0 src.jpg dst.png", &command);
         return Err(anyhow::anyhow!("usage error"));
     }
 
@@ -432,20 +406,25 @@ fn main() -> anyhow::Result<()> {
         println!("filter_size must be greater than or equal to 1");
         return Err(anyhow::anyhow!("argument error"));
     }
-    let q: f32 = args[2].parse().unwrap();
-    if q < 0.0 {
-        println!("q must be greater than or equal to 0");
+    let sharpness: f32 = args[2].parse().unwrap();
+    if sharpness <= 0.0 {
+        println!("sharpness must be greater than 0");
         return Err(anyhow::anyhow!("argument error"));
     }
-    let sigma: f32 = args[3].parse().unwrap();
-    if sigma <= 0.0 {
-        println!("sigma must be greater than 0");
+    let eccentricity: f32 = args[3].parse().unwrap();
+    if eccentricity <= 0.0 {
+        println!("eccentricity must be greater than 0");
+        return Err(anyhow::anyhow!("argument error"));
+    }
+    let uniformity: f32 = args[4].parse().unwrap();
+    if uniformity <= 0.0 {
+        println!("uniformity must be greater than 0");
         return Err(anyhow::anyhow!("argument error"));
     }
 
-    let src = &args[4];
-    let dst = &args[5];
+    let src = &args[5];
+    let dst = &args[6];
 
-    filter(filter_size, q, sigma, src, dst)?;
+    filter(filter_size, sharpness, eccentricity, uniformity, src, dst)?;
     Ok(())
 }
