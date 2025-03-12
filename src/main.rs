@@ -1,12 +1,9 @@
 use wgpu::util::DeviceExt;
 
-use pollster::FutureExt;
-
 use image::Rgba;
 use image::RgbaImage;
 
 // Giuseppe Papari, Nicolai Petkov, and Patrizio Campisi, Artistic Edge and Corner Enhancing Smoothing, IEEE TRANSACTIONS ON IMAGE PROCESSING, VOL. 16, NO. 10, OCTOBER 2007, pages 2449–2461
-
 // https://blog.redwarp.app/image-filters/
 // https://github.com/redwarp/blog/blob/main/code-sample/image-filters/src/main.rs
 // https://github.com/redwarp/filters
@@ -164,7 +161,7 @@ fn create_texture(
     })
 }
 
-fn filter(
+async fn filter(
     filter_size: i32,
     sharpness: f32,
     eccentricity: f32,
@@ -181,11 +178,9 @@ fn filter(
             force_fallback_adapter: false,
             compatible_surface: None,
         })
-        .block_on()
+        .await
         .ok_or(anyhow::anyhow!("Couldn't create the adapter"))?;
-    let (device, queue) = adapter
-        .request_device(&Default::default(), None)
-        .block_on()?;
+    let (device, queue) = adapter.request_device(&Default::default(), None).await?;
 
     // Load the image
     let input_image = load_rgba(src_path)?;
@@ -388,7 +383,8 @@ fn padded_bytes_per_row(width: u32) -> usize {
     bytes_per_row + padding
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // dbg!(&args);
     if args.len() != 7 {
@@ -425,6 +421,6 @@ fn main() -> anyhow::Result<()> {
     let src = &args[5];
     let dst = &args[6];
 
-    filter(filter_size, sharpness, eccentricity, uniformity, src, dst)?;
+    filter(filter_size, sharpness, eccentricity, uniformity, src, dst).await?;
     Ok(())
 }
