@@ -178,9 +178,8 @@ async fn filter(
             force_fallback_adapter: false,
             compatible_surface: None,
         })
-        .await
-        .ok_or(anyhow::anyhow!("Couldn't create the adapter"))?;
-    let (device, queue) = adapter.request_device(&Default::default(), None).await?;
+        .await?;
+    let (device, queue) = adapter.request_device(&Default::default()).await?;
 
     // Load the image
     let input_image = load_rgba(src_path)?;
@@ -336,7 +335,7 @@ async fn filter(
     let buffer_slice = output_buffer.slice(..);
     buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
 
-    device.poll(wgpu::Maintain::Wait);
+    device.poll(wgpu::PollType::Wait)?;
 
     let padded_data = buffer_slice.get_mapped_range();
 
