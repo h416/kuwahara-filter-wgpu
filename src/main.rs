@@ -335,7 +335,7 @@ async fn filter(
     let buffer_slice = output_buffer.slice(..);
     buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
 
-    device.poll(wgpu::PollType::Wait)?;
+    device.poll(wgpu::PollType::Wait{submission_index:None, timeout:Some(std::time::Duration::from_secs(60))})?;
 
     let padded_data = buffer_slice.get_mapped_range();
 
