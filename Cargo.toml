@@ -6,13 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.98"
-bytemuck = "1.23"
+anyhow = "1.0.100"
+bytemuck = "1.24"
 env_logger = "0.11"
-image = { version = "0.25.6", default-features = false, features = ["jpeg", "png"] }
-load_image = "3.2.1"
-log = "0.4.27"
-tokio = { version = "1.46.1", features = ["full"] }
-wgpu = "27.0.1"
+image = { version = "0.25.9", default-features = false, features = ["jpeg", "png"] }
+load_image = "3.3.1"
+log = "0.4.29"
+tokio = { version = "1.48.0", features = ["full"] }
+wgpu = "28.0.0"
 
 
