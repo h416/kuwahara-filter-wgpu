@@ -177,6 +177,7 @@ async fn filter(
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: None,
+            apply_limit_buckets: false,
         })
         .await?;
     let (device, queue) = adapter.request_device(&Default::default()).await?;
@@ -337,7 +338,7 @@ async fn filter(
 
     device.poll(wgpu::PollType::Wait{submission_index:None, timeout:Some(std::time::Duration::from_secs(60))})?;
 
-    let padded_data = buffer_slice.get_mapped_range();
+    let padded_data = buffer_slice.get_mapped_range()?;
 
     let mut pixels: Vec<u8> = vec![0; unpadded_bytes_per_row * height as usize];
     for (padded, pixels) in padded_data
